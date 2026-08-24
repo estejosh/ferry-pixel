@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "Ferry channel watcher that injects agent presence into Pixel Agents offices via hook events",
+  "bin": {
+    "ferry-pixel": "./bin/ferry-pixel.js"
+  },
   "engines": {
     "node": ">=18.17"
   },
@@ -17,11 +20,11 @@
     "fixtures": "sh fixtures/make-channel.sh"
   },
   "dependencies": {
-    "chokidar": "^4.0.3"
+    "chokidar": "^4.0.3",
+    "tsx": "^4.20.6"
   },
   "devDependencies": {
     "@types/node": "^24.3.1",
-    "tsx": "^4.20.6",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"
   }

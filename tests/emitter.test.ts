@@ -7,11 +7,11 @@ import { join } from 'node:path'
 import {
   discoverServers,
   fanOut,
-  mapOfficeAction,
   payloadBody,
   sendEvent,
   type HookPayload,
 } from '../src/emitter'
+import { mapOfficeAction } from '../src/map'
 
 interface CapturedPost {
   url: string
@@ -126,35 +126,6 @@ describe('discoverServers', () => {
   })
 })
 
-describe('mapOfficeAction', () => {
-  it('spawn emits SessionStart then PreToolUse with the agent name as cwd basename', () => {
-    const payloads = mapOfficeAction({ action: 'spawn', sessionKey: 'Pixel' }, '/tmp/channels')
-    expect(payloads.map(p => p.hook_event_name)).toEqual(['SessionStart', 'PreToolUse'])
-    expect(payloads[0]).toMatchObject({
-      session_id: 'Pixel',
-      source: 'startup',
-      cwd: join('/tmp/channels', 'Pixel'),
-    })
-    expect(payloads[0]!.cwd!.endsWith('/Pixel')).toBe(true)
-    expect(payloads[1]).toMatchObject({ session_id: 'Pixel', tool_name: 'Task' })
-  })
-
-  it('wait maps to Notification idle_prompt', () => {
-    const [payload] = mapOfficeAction({ action: 'wait', sessionKey: 'Pixel' }, '/tmp/channels')
-    expect(payload).toMatchObject({
-      hook_event_name: 'Notification',
-      session_id: 'Pixel',
-      notification_type: 'idle_prompt',
-    })
-  })
-
-  it('despawn emits Stop reason exit followed by SessionEnd reason exit', () => {
-    const payloads = mapOfficeAction({ action: 'despawn', sessionKey: 'Pixel' }, '/tmp/channels')
-    expect(payloads.map(p => p.hook_event_name)).toEqual(['Stop', 'SessionEnd'])
-    expect(payloads.every(p => p.reason === 'exit')).toBe(true)
-  })
-})
-
 describe('sendEvent over HTTP', () => {
   it('POSTs to /api/hooks/claude with bearer auth and the payload verbatim', async () => {
     const entry = await withTempDir(async dir => {
@@ -165,7 +136,10 @@ describe('sendEvent over HTTP', () => {
     })
 
     captured = []
-    const payloads: HookPayload[] = mapOfficeAction({ action: 'spawn', sessionKey: 'Pixel' }, '/tmp/channels')
+    const payloads: HookPayload[] = mapOfficeAction(
+      { type: 'spawn-character', taskId: 't-http', agent: 'Pixel', label: 'Pixel' },
+      '/tmp/channels',
+    )
     for (const payload of payloads) {
       expect(await sendEvent(entry!, payload)).toBe(true)
     }
@@ -175,10 +149,10 @@ describe('sendEvent over HTTP', () => {
     expect(captured[0]!.auth).toBe('Bearer test-token-abc')
     expect(captured[0]!.body).toMatchObject({
       hook_event_name: 'SessionStart',
-      session_id: 'Pixel',
+      session_id: 't-http',
       cwd: join('/tmp/channels', 'Pixel'),
     })
-    expect(captured[1]!.body).toMatchObject({ hook_event_name: 'PreToolUse', session_id: 'Pixel' })
+    expect(captured[1]!.body).toMatchObject({ hook_event_name: 'PreToolUse', session_id: 't-http' })
     expect(JSON.stringify(captured.map(c => c.body))).not.toContain('test-token-abc')
   })
 

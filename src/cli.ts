@@ -1,19 +1,19 @@
 #!/usr/bin/env node
 import { parseArgs } from 'node:util'
 import { statSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { basename, resolve } from 'node:path'
 import {
   discoverServers,
-  emitPayloads,
-  mapOfficeAction,
   parseServerUrl,
+  sendAll,
   sendToUrl,
   type HookPayload,
-  type OfficeAction,
   type ServerTarget,
 } from './emitter'
-import { watch, type ChannelEvent } from './watcher'
+import { pipeEvent } from './pipeline'
+import { TaskStateMachine } from './state'
 import { tryLoadShared } from './shared'
+import { watch, type ChannelEvent as RawChannelEvent } from './watcher'
 
 interface CliOptions {
   channels: string[]
@@ -32,8 +32,12 @@ Options:
   --channel <dir>   channel directory to watch (repeatable)
   --server <url>    override discovery; http://<token>@127.0.0.1:<port> embeds the token
   --registry <dir>  alternate ~/.pixel-agents/servers registry dir
-  --dry-run         print OfficeActions and hook payloads instead of sending
+  --dry-run         print hook payloads instead of sending
   --help            show this help
+
+Pipeline: channel file -> ChannelEvent -> task state machine (office actions)
+-> hook mapper (src/map.ts) -> POST /api/hooks/claude on every discovered
+pixel-agents server. See ../PROTOCOL.md for the wire protocol.
 `
 
 export function parseCli(argv: string[]): CliOptions {
@@ -57,62 +61,56 @@ export function parseCli(argv: string[]): CliOptions {
   }
 }
 
-const DETAIL_FIELDS = ['title', 'task', 'summary', 'description', 'name', 'command'] as const
-
-function detailOf(ev: ChannelEvent): string | undefined {
-  for (const field of DETAIL_FIELDS) {
-    const value = ev.data[field]
-    if (typeof value === 'string' && value.trim()) return value.trim()
-  }
-  return undefined
-}
-
-export function actionForEvent(ev: ChannelEvent): OfficeAction | null {
-  switch (ev.kind) {
-    case 'order':
-      return { action: 'spawn', sessionKey: ev.sessionKey, detail: detailOf(ev) }
-    case 'claim':
-      return { action: 'activate', sessionKey: ev.sessionKey, detail: detailOf(ev) }
-    case 'review':
-      return { action: 'wait', sessionKey: ev.sessionKey, detail: detailOf(ev) }
-    case 'result':
-      return { action: 'despawn', sessionKey: ev.sessionKey }
-    default:
-      return null
-  }
-}
-
+/**
+ * Full pipeline for one raw watcher event:
+ * raw file event -> typed ChannelEvent -> state.transition() -> OfficeAction[]
+ * -> map.ts -> HookPayload[].
+ * Returns null when the event is unusable or produced no office intents.
+ */
 async function deliver(
-  action: OfficeAction,
-  channelsRoot: string,
+  payloads: HookPayload[],
   opts: CliOptions,
   servers: ServerTarget[] | null,
 ): Promise<void> {
-  const payloads: HookPayload[] = mapOfficeAction(action, channelsRoot)
+  if (payloads.length === 0) return
   if (opts.dryRun) {
-    console.log(`[dry-run] action=${action.action} session=${action.sessionKey}`)
     for (const payload of payloads) console.log(JSON.stringify(payload))
     return
   }
   let ok = 0
+  let total = payloads.length
   if (opts.server) {
     const override = parseServerUrl(opts.server)
+    total = payloads.length
     for (const payload of payloads) {
       if (await sendToUrl(override.url, override.token, payload)) ok++
     }
-  } else if (servers) {
-    ok = await emitPayloads(payloads, servers)
+  } else if (servers && servers.length > 0) {
+    ok = await sendAll(payloads, servers)
+    total = payloads.length * servers.length
+  } else {
+    console.error('ferry-pixel: no pixel-agents server discovered; skipping send')
+    return
   }
-  console.log(
-    `sent ${ok}/${payloads.length * Math.max((servers?.length ?? 0), 1)} payloads for ${action.action} ${action.sessionKey}`,
-  )
+  console.log(`sent ${ok}/${total} payloads`)
 }
 
-function onEvent(ev: ChannelEvent, opts: CliOptions, servers: ServerTarget[] | null): void {
-  const action = actionForEvent(ev)
-  if (!action) return
-  console.log(`${ev.kind} ${ev.file} agent=${ev.sessionKey} task=${ev.taskId}`)
-  void deliver(action, ev.dir, opts, servers).catch(() => {})
+function onEvent(
+  raw: RawChannelEvent,
+  opts: CliOptions,
+  servers: ServerTarget[] | null,
+  state: TaskStateMachine,
+): void {
+  const sessionIdPrefix = sanitizePrefix(basename(raw.dir))
+  const payloads = pipeEvent(raw, state, sessionIdPrefix)
+  if (!payloads || payloads.length === 0) return
+  console.log(`${raw.kind} ${raw.file} task=${raw.taskId}`)
+  void deliver(payloads, opts, servers).catch(() => {})
+}
+
+function sanitizePrefix(input: string): string {
+  const cleaned = input.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '')
+  return cleaned || 'channel'
 }
 
 function usableDirs(channels: string[]): string[] {
@@ -161,10 +159,11 @@ async function main(): Promise<void> {
       console.log(`discovered pixel-agents servers: ${servers?.length ?? 0}`)
     }
   } else {
-    console.log('dry-run: events will be printed, not sent')
+    console.log('dry-run: hook payloads will be printed, not sent')
   }
 
-  const handle = watch(dirs, ev => onEvent(ev, opts, servers))
+  const state = new TaskStateMachine()
+  const handle = watch(dirs, ev => onEvent(ev, opts, servers, state))
   const shutdown = (): void => {
     void handle.close().then(() => process.exit(0))
   }

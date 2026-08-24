@@ -33,15 +33,6 @@ export interface HookPayload {
   transcript_path?: string
 }
 
-export type OfficeActionType = 'spawn' | 'activate' | 'wait' | 'finish' | 'despawn'
-
-export interface OfficeAction {
-  action: OfficeActionType
-  sessionKey: string
-  toolName?: string
-  detail?: string
-}
-
 export const HOOK_PATH = '/api/hooks/claude'
 export const SEND_TIMEOUT_MS = 2000
 export const MAX_BODY_BYTES = 65536
@@ -151,7 +142,7 @@ export async function fanOut(servers: ServerTarget[], payload: HookPayload): Pro
   return results.filter(Boolean).length
 }
 
-export async function emitPayloads(
+export async function sendAll(
   payloads: HookPayload[],
   servers: ServerTarget[],
 ): Promise<number> {
@@ -162,49 +153,5 @@ export async function emitPayloads(
   return ok
 }
 
-export function channelCwd(channelsRoot: string, sessionKey: string): string {
-  return join(channelsRoot, sessionKey)
-}
-
-export function mapOfficeAction(action: OfficeAction, channelsRoot: string): HookPayload[] {
-  const session_id = action.sessionKey
-  switch (action.action) {
-    case 'spawn':
-      return [
-        { hook_event_name: 'SessionStart', session_id, source: 'startup', cwd: channelCwd(channelsRoot, session_id) },
-        {
-          hook_event_name: 'PreToolUse',
-          session_id,
-          tool_name: action.toolName ?? 'Task',
-          tool_input: { command: action.detail ?? `resume ${session_id}` },
-        },
-      ]
-    case 'activate':
-      return [
-        {
-          hook_event_name: 'PreToolUse',
-          session_id,
-          tool_name: action.toolName ?? 'Bash',
-          tool_input: { command: action.detail ?? 'work on task' },
-        },
-      ]
-    case 'wait':
-      return [
-        {
-          hook_event_name: 'Notification',
-          session_id,
-          notification_type: 'idle_prompt',
-          message: action.detail ?? 'Waiting for input',
-        },
-      ]
-    case 'finish':
-      return [{ hook_event_name: 'Stop', session_id }]
-    case 'despawn':
-      return [
-        { hook_event_name: 'Stop', session_id, reason: 'exit' },
-        { hook_event_name: 'SessionEnd', session_id, reason: 'exit' },
-      ]
-    default:
-      return []
-  }
-}
+/** @deprecated legacy alias for sendAll */
+export const emitPayloads = sendAll
