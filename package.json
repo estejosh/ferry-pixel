@@ -12,7 +12,9 @@
     "cli": "tsx src/cli.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:state": "vitest run tests/state.test.ts",
+    "test:watch": "vitest",
+    "fixtures": "sh fixtures/make-channel.sh"
   },
   "dependencies": {
     "chokidar": "^4.0.3"
